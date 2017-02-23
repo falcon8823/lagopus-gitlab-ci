@@ -1,0 +1,41 @@
+# .gitlab-ci.yml
+variables:
+  CONT_TEST_IMAGE: falcon8823/lagopus-docker
+  RYU_NAME: ci-${CI_PIPELINE_ID}-ryu01
+  LAGO1_NAME: ci-${CI_PIPELINE_ID}-lago1
+  LAGO2_NAME: ci-${CI_PIPELINE_ID}-lago2
+  MAX_TIME: '1800' # judge.shのタイムアウト時間（秒）
+
+stages:
+  - test
+  - cleanup_test
+
+# テスト
+test:
+  stage: test
+  image: docker:latest
+  script:
+    # イメージをpull
+    - docker pull $CONT_TEST_IMAGE
+    # vhostのsocketファイルを削除
+    - docker run --rm -v /tmp/dpdk:/tmp/dpdk busybox sh -c 'rm -rf /tmp/dpdk/vhost*'
+    # テスターのRyuを起動（デタッチモード）
+    - docker run -d --rm --name $RYU_NAME osrg/ryu ryu-manager ryu/ryu/tests/switch/tester.py --test-switch-dir ryu/ryu/tests/switch/of13/action/00_OUTPUT.json
+    # Lagopusを起動（デタッチモード）
+    # TODO: /path/toの部分を環境に応じてかえること
+    - docker run -d --link=$RYU_NAME:ryu01 --name $LAGO1_NAME -v /path/to/vhost.dsl:/tmp/lago/vhost.dsl -v /tmp/dpdk:/tmp/dpdk -v /mnt/huge_c0:/mnt/huge_c0 $CONT_TEST_IMAGE lagopus -d -l /dev/stderr -C /tmp/lago/vhost.dsl -- -c 0xf -n 2 -m 1024 --no-pci --huge-dir=/mnt/huge_c0 --
+    # Lagopusを起動（デタッチモード）
+    # TODO: /path/toの部分を環境に応じてかえること
+    - docker run -d --link=$RYU_NAME:ryu01 --name $LAGO2_NAME -v /path/to/virtio.dsl:/tmp/lago/virtio.dsl -v /tmp/dpdk:/tmp/dpdk -v /mnt/huge_c1:/mnt/huge_c1 $CONT_TEST_IMAGE lagopus -d -l /dev/stderr -C /tmp/lago/virtio.dsl -- -c 0xf0 -n 2 -m 1024 --no-pci --huge-dir=/mnt/huge_c1 --
+    # テスト判定スクリプトを実行
+    - ./judge.sh
+
+
+# コンテナの終了と片付け
+cleanup_test:
+  stage: cleanup_test
+  image: docker:latest
+  script:
+    - docker kill $RYU_NAME $LAGO1_NAME $LAGO2_NAME || true
+    - docker rm $RYU_NAME $LAGO1_NAME $LAGO2_NAME || true
+  when: always
